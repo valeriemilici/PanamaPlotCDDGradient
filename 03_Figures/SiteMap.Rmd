@@ -1,0 +1,140 @@
+---
+title: "Analysis of precipitation trends"
+author: "Robert Bagchi"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: pdf_document
+number_sections: yes
+toc: true
+---
+
+Don't run this code once you get it to work the first time. 
+```{r install rnaturalearthhires}
+library(devtools)
+devtools::install_github("ropensci/rnaturalearthhires") #I skip update
+```
+
+
+```{r packages, warning=FALSE, message=FALSE}
+library(tidyverse)
+#library(tidyselect)
+library(sf)
+library(terra)
+library(ggspatial)
+library(tidyterra)
+library(ggthemes)
+library(rnaturalearth)
+library(ggrepel)
+library(lubridate)
+```
+
+Get precipitation data from Worldclim and coastline from Natural Earth. 
+
+```{r getData}
+sites <- read.csv("2023data/SiteData_Gradient_Jeffs.csv") ## site data
+
+pan <- ne_countries(country = "Panama", returnclass = "sf") # panama boundary
+bounds_pan <- st_bbox(pan)
+CAM <- ne_countries(scale = "medium", type = "countries", 
+                    continent= c("North America", "South America"), 
+                    returnclass = "sf") ## for inset
+## MAP data 1961-1990 from Luke
+map_pan <-  rast("2023data/ppt_longterm.tif")
+crs(map_pan) <-  "EPSG:4326"
+names(map_pan) <- "MAP"
+
+## DEM data for coasts, lakes and elevation shading
+elev_pan <- rast("2023data/pma_dem_cropped.tif")
+map_pan[is.na(elev_pan)] <- NA ## remove data with no land
+```
+
+
+```{r hillshade}
+slope_pan <- terrain(elev_pan, v = "slope", unit = "radians")  
+aspect_pan <- terrain(elev_pan, v = "aspect", unit = "radians")  
+hill_pan <- shade(slope_pan, aspect_pan, 30, 270)  
+names(hill_pan) <- "shades"
+pal_greys <- hcl.colors(1000, "Grays")
+
+hindex <- hill_pan  |>  
+  mutate(index_col = scales::rescale(shades, to = c(1, length(pal_greys)))) |> 
+  mutate(index_col = round(index_col)) %>%
+  pull(index_col)
+vector_cols <- pal_greys[hindex]
+
+hillshades <- ggplot() +
+  geom_spatraster(data = hill_pan, fill = vector_cols, maxcell = Inf, alpha = 1)
+```
+
+# Plot the map
+
+```{r plot_map}
+pl <- 
+  hillshades +
+  geom_spatraster(data = map_pan, aes(fill = MAP), interpolate =FALSE, alpha = 0.6) +
+    annotation_north_arrow(style = north_arrow_nautical, location = "bl",
+                         pad_x = unit(0.5, "in"), pad_y = unit(0.3, "in")) +
+  annotation_scale(location = "bl", width_hint = 0.25) +
+  scale_fill_viridis_c(option = "turbo", na.value=NA, direction=-1) +
+  annotate(geom = "text", x = c(-80.1, -79.4), y = c(9.39, 8.92), 
+           label = c("Atlantic","Pacific"), fontface = "italic",
+            size = 4, colour = "royalblue") +
+  scale_x_continuous(breaks= seq(-80.2, -79.4, 0.2), expand = c(0, 0)) + 
+  scale_y_continuous(breaks = seq(8.8, 9.4, 0.2), expand = c(0, 0)) +
+  labs(x="", y="", fill= expression(Mean~Annual~Precipitation~(mm~y^-1))) +
+  theme_tufte() +
+  theme(panel.grid.major = element_blank(), 
+        panel.background = element_rect(fill = "aliceblue"), 
+        axis.line = element_blank(),
+        plot.margin = unit(c(1.2, 1, 0 ,0), "in"),
+        panel.border = element_blank(),
+        legend.title=element_text(size=10, face = "bold"), 
+        legend.key.width = unit(0.75, "in"),
+        legend.position = c(0.4, 1.15), 
+        legend.direction = "horizontal") +
+  guides(fill = guide_colorbar(title.position="top", title.hjust = 0.5))
+         
+(siteplot <- pl + geom_point(data=sites, aes(y=Latitude, x=Longitude),
+                            size = 3) +
+ geom_text_repel(data=sites, aes(label=BOSQUE, y=Latitude, x=Longitude), 
+                  size=4, nudge_y = 0.03, nudge_x = 0.03, 
+                 bg.colour = "white", fontface = "bold", bg.r = .08 ))
+
+
+ggsave(filename ="Figures/SiteMap.jpg", plot = siteplot, 
+       height = 5, width = 8, units = "in")
+```
+
+
+```{r inset}
+pan_box <- st_polygon(list(
+  cbind(c(-85, -75, -75, -85, -85),  c(5, 5, 12, 12, 5)))) |> 
+  st_sfc(crs =st_crs(CAM))      
+
+p2 <- 
+  ggplot() + 
+  geom_sf(data = CAM, colour = "grey10", fill = "tan", alpha=0.4) +
+  geom_sf(data=pan_box, color="red", fill= NA, lwd=1) +
+  coord_sf(xlim = c(-125, -20), ylim = c(-50, 50), expand = TRUE) +
+  theme_tufte() +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "aliceblue"), #"white"),
+        panel.border = element_rect(colour = "white", fill = NA, linewidth=1.2),
+        plot.margin = unit(c(0, 0, 0 ,0), "mm"))
+
+library(patchwork)
+
+(siteplot_inset <- siteplot + inset_element(p2, left = 0.78, bottom = 0.4, 
+                         right = unit(1,"npc")   + unit(0, "in"),
+                         top = unit(1, "npc") + unit(1, "in"), 
+                          align_to = 'full'))
+
+ggsave(filename ="figures/SiteMapZoom.png", plot = siteplot_inset)
+```

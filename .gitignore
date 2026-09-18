@@ -54,7 +54,10 @@ rsconnect/
 *.jpg
 *.tiff
 *.png
+*.pdf
+*.pptx
 output/
+ms_figs/
 *.Rdata
 lin_mod
 res_mod
