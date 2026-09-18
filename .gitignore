@@ -56,3 +56,6 @@ rsconnect/
 *.png
 output/
 *.Rdata
+lin_mod
+res_mod
+res_red_mod

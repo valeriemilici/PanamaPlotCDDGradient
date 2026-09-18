@@ -1,0 +1,344 @@
+---
+title: "CDD Gradient Analysis"
+author: "Valerie Milici"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list =ls())
+
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(DHARMa)
+library(ggeffects)
+library(ggplot2)
+library(knitr)
+library(broom)
+library(broom.mixed)
+library(gamm4)
+library(mgcv)
+
+dat <- read.csv("2023data/2023censusdat.csv")
+
+```
+
+# Introduction
+
+The analysis uses and compares three methods to assess whether the strength of CDD in the established seedling community is overall negative, and if it becomes more negative as available moisture (measured by mean annual precipitation and dry season deficit) increases.
+
+The methods used are:
+
+1. [GLMM/LMM](#method-one)
+
+2. [Bayesian Linear Modeling using Stan](#method-two)
+
+3. [Non-linear Marginal Effects: AME & rAME](#method-three)
+
+
+## Data Exploration
+
+How much data does each site contribute?
+
+```{r table1, echo=FALSE}
+table(dat$BOSQUE)
+```
+Santa Rita has 19000 seedling observations while the other sites have 3991 - 6619
+
+How many species are surveyed at each site? 
+
+```{r table1, echo=FALSE}
+dat %>% group_by(BOSQUE) %>%
+  summarise(n = n_distinct(SPP))
+```
+
+
+Total seedling density by site?
+
+```{r plot1, echo=FALSE}
+ggplot(dat) +
+  geom_density(mapping = aes(tot_dens)) +
+  facet_wrap(~BOSQUE)
+```
+
+
+
+```{r plot2, echo=FALSE}
+ggplot(dat) +
+  geom_density(mapping = aes(con_dens)) +
+  facet_wrap(~BOSQUE)
+```
+Relationship between conspecific density and survival
+
+```{r plot 3, echo = FALSE}
+ggplot(dat) +
+  geom_smooth(mapping = aes(con_dens, STATUS)) +
+facet_wrap(~BOSQUE)
+```
+Odd that the smooth failed for PP and Charco. 
+
+<a id="method-one"></a>
+
+# CDD assessed with GLMM/LMM
+
+## Use all of the data
+
+```{r method 1 data cleaning, echo = FALSE}
+splist <- dat %>% group_by(SPP) %>% 
+  summarize(range = max(con_dens, na.rm = T) - min(con_dens, na.rm = T),
+            n.obs = length(unique(con_dens))) %>%
+  filter(range > 1 & n.obs > 1) %>% 
+    ungroup()
+
+spp <- as.list(splist$SPP)
+
+dat1 <- dat %>% filter(SPP %in% spp) %>%
+  group_by(SPP) %>% mutate(ht.prev.census = scale(ALT_LAST_CENSUS))
+```
+
+The data here have been filtered so that each species, at minimum must have at least two observed conspecific density values, and at minimum two observations of that species. At the moment this filter is redundant, but it's included so that I can play with either option down the line. 
+
+To facilitate model fit, I have also scaled height from the previous census (within species). 
+
+The fixed effects for density in this model are ".p" meaning that they are the counts from the previous census. So how does last year's conspecific and total density predict whether or not you are dead this year?
+
+```{r GLMM Mort Mod, message=FALSE, warning=FALSE}
+
+mod1 <- glmer(mort ~ (con_dens.p + tot_dens.p)*scale(MAP) + ht.prev.census +
+                (1|SPP) + (1|ID) + (1|BOSQUE/P5) + (1|CENSO),
+              data = filter(dat1, CENSO != 1),
+              family = binomial(link = "cloglog"),
+              offset = log(TIME_SINCE_LAST_CENSUS))
+```
+
+
+Now model the standard way; how current density affects prob. seedling is dead. Does it change anything
+
+```{r GLMM Mort Modb, message=FALSE, warning=FALSE}
+
+mod1b <- glmer(mort ~ (con_dens + tot_dens)*scale(MAP) + ht.prev.census +
+                (1|SPP) + (1|ID) + (1|BOSQUE/P5) + (1|CENSO),
+              data = filter(dat1, CENSO != 1),
+              family = binomial(link = "cloglog"),
+              offset = log(TIME_SINCE_LAST_CENSUS))
+```
+
+The standard way fits better. I want to talk about it! Why? 
+
+Check some model diagnostics:
+
+```{r mod 1 diagnostics, echo = FALSE}
+
+simOut <- simulateResiduals(fittedModel = mod1b, plot = F)
+
+plot(simOut)
+
+testDispersion(simOut)
+
+dat2 <- dat1 %>% filter(CENSO != 1 & !is.na(con_dens) & !is.na(ht.prev.census))
+
+plotResiduals(simOut, form = dat2$MAP)
+```
+Overall it looks like the model fits pretty well. The only thing I might play around with is removing the data from the second-driest site, because even though many of the residuals have variance that exceeds expectations, only site #2 has a strong effect.
+
+## Remove Santa Rita
+
+Santa Rita has 14K observations while the other sites all have 3-5K
+
+```{r remove SR data, echo = FALSE}
+dat3 <- filter(dat, BOSQUE != "Santa Rita")
+splist <- dat3 %>% group_by(SPP) %>% 
+  summarize(range = max(con_dens, na.rm = T) - min(con_dens, na.rm = T),
+            n.obs = length(unique(con_dens))) %>%
+  filter(range > 1 & n.obs > 1) %>% 
+    ungroup()
+
+spp <- as.list(splist$SPP)
+
+dat4 <- dat3 %>% filter(SPP %in% spp) %>%
+  group_by(SPP) %>% mutate(ht.prev.census = scale(ALT_LAST_CENSUS))
+```
+
+
+```{r mort GLMM no SR data, message = FALSE}
+mod2 <- glmer(mort ~ (con_dens + tot_dens)*scale(MAP) + ht.prev.census +
+                (1|SPP) + (1|ID) + (1|BOSQUE/P5) + (1|CENSO),
+              data = filter(dat4, CENSO != 1),
+              family = binomial(link = "cloglog"),
+              offset = log(TIME_SINCE_LAST_CENSUS))
+```
+
+
+```{r mod 2 diagnostics, echo = FALSE}
+
+simOut2 <- simulateResiduals(fittedModel = mod2, plot = F)
+
+plot(simOut2)
+
+testDispersion(simOut2)
+
+dat5 <- dat4 %>% filter(CENSO != 1 & !is.na(con_dens) & !is.na(ht.prev.census))
+
+plotResiduals(simOut2, form = dat5$MAP)
+```
+The model without Santa Rita appears to fit a little bit better. Now two sites don't deviate significantly. Before I remove too much data and remove Metropolitano (that second site that is the highest about Q75) in addition to Santa Rita, I will run this model with only Metropolitano data removed. Then I will do both. I will show model summaries as a series of tables below these models so that they can all be compared at once. 
+
+## Remove Metropolitano
+
+```{r remove metropolitano select and scale species}
+dat6 <- filter(dat, BOSQUE != "Metropolitano")
+splist <- dat6 %>% group_by(SPP) %>% 
+  summarize(range = max(con_dens, na.rm = T) - min(con_dens, na.rm = T),
+            n.obs = length(unique(con_dens))) %>%
+  filter(range > 1 & n.obs > 1) %>% 
+    ungroup()
+
+spp <- as.list(splist$SPP)
+
+dat7 <- dat6 %>% filter(SPP %in% spp) %>%
+  group_by(SPP) %>% mutate(ht.prev.census = scale(ALT_LAST_CENSUS))
+```
+
+
+```{r GLMM Mortality no Metropolitano}
+mod3 <- glmer(mort ~ (con_dens + tot_dens)*scale(MAP) + ht.prev.census +
+                (1|SPP) + (1|ID) + (1|BOSQUE/P5) + (1|CENSO),
+              data = filter(dat7, CENSO != 1),
+              family = binomial(link = "cloglog"),
+              offset = log(TIME_SINCE_LAST_CENSUS))
+```
+
+
+```{r mod 3 diagnostics, echo = FALSE}
+
+simOut3 <- simulateResiduals(fittedModel = mod3, plot = F)
+
+plot(simOut3)
+
+testDispersion(simOut3)
+
+dat8 <- dat7 %>% filter(CENSO != 1 & !is.na(con_dens) & !is.na(ht.prev.census))
+
+plotResiduals(simOut3, form = dat8$MAP)
+```
+The loss of Metropolitano results in failed model convergence, and does not improve the residuals plot. It seems to be important. 
+
+## Remove Santa Rita and Metropolitano
+
+```{r remove metropolitano/SR select and scale species}
+dat9 <- filter(dat, BOSQUE != "Metropolitano" & BOSQUE != "Santa Rita")
+splist <- dat9 %>% group_by(SPP) %>% 
+  summarize(range = max(con_dens, na.rm = T) - min(con_dens, na.rm = T),
+            n.obs = length(unique(con_dens))) %>%
+  filter(range > 1 & n.obs > 1) %>% 
+    ungroup()
+
+spp <- as.list(splist$SPP)
+
+dat10 <- dat9 %>% filter(SPP %in% spp) %>%
+  group_by(SPP) %>% mutate(ht.prev.census = scale(ALT_LAST_CENSUS))
+```
+
+
+```{r GLMM Mortality no Metropolitano & SR}
+mod4 <- glmer(mort ~ (con_dens + tot_dens)*scale(MAP) + ht.prev.census +
+                (1|SPP) + (1|ID) + (1|BOSQUE/P5) + (1|CENSO),
+              data = filter(dat10, CENSO != 1),
+              family = binomial(link = "cloglog"),
+              offset = log(TIME_SINCE_LAST_CENSUS),
+              control = glmerControl(optimizer = "bobyqa"))
+```
+
+
+```{r mod 4 diagnostics, echo = FALSE}
+
+simOut4 <- simulateResiduals(fittedModel = mod4, plot = F)
+
+plot(simOut4)
+
+testOutliers(simOut4,type = "bootstrap")
+
+testDispersion(simOut4)
+
+dat11 <- dat10 %>% filter(CENSO != 1 & !is.na(con_dens) & !is.na(ht.prev.census))
+
+plotResiduals(simOut4, form = dat11$MAP)
+```
+This type of thinning results in some issues: model is nearly underdispersed (p = 0.12). It also improves the heteroscedasticity in the residuals compared to other models, so that may be a bonus. 
+
+## The model summaries
+
+Model 1- contains all of the data:
+
+```{r mod 1 summary, echo=FALSE}
+mod1b %>% tidy() %>% filter(!is.na(p.value)) %>% dplyr::select(-c(1:2)) %>% kable(digits = 5)
+```
+
+Marginal effect that increased conspecific density increases mortality. Increased total density decreases mortality (marginal). Increased MAP decreases mortality. As expected tall plants are much less likely to die. Interestingly, as MAP increases, increased conspecific density decreases probability of mortality. Based on size of coef. estimates, this would result in PDD towards the wettest side of the gradient. 
+
+Model 2- Santa Rita is removed (has 3x number of data points compared to other sites. This is weird)
+
+```{r mod 2 summary, echo=FALSE}
+mod2 %>% tidy() %>% filter(!is.na(p.value)) %>% dplyr::select(-c(1:2)) %>% kable(digits = 5)
+```
+
+With the removal of Santa Rita, the model fit does appear to improve (via above model diagnostics). We see that the effect of conspecific density strengthens compared to the previous model, as does the effect of total density. We also see a marginal interaction between total density and MAP that suggests that at the wettest sites, seedlings are even better off at high seedling density than at the driest sites (even though both groups would see improved chances of survival under increased total density).
+
+So far, it seems justifiable to remove Santa Rita from the dataset. 
+
+Model 3- Metropolitano is removed (bc diagnostic plots show that Met has the greatest deviance in predicted vs. residuals compared to other sites). 
+
+```{r mod 3 summary, echo=FALSE}
+mod3 %>% tidy() %>% filter(!is.na(p.value)) %>% dplyr::select(-c(1:2)) %>% kable(digits = 5)
+```
+Notes: This model fails to converge. I could probably get it to converge if I spent more time on it (tried different optimizers), but it's not a total failure, so good enough for this casual check.
+
+There is nothing to report from this model. It now only shows the most consistent and strongest trends.
+
+Model 4- Santa Rita and Metropolitano are removed. Because SR is justifiable and Metropolitano is also ~weird~ (I will explore this potential weirdness more in depth so that it could be articulated).
+
+```{r mod 4 summary, echo=FALSE}
+mod4 %>% tidy() %>% filter(!is.na(p.value)) %>% dplyr::select(-c(1:2)) %>% kable(digits = 5)
+```
+
+Well. This is *interesting*. This model also fails to converge (prob. inherited the issue from the absence of metropolitano. Again, likely fixable). We see once more that increased conspecific density increases mortality risk while increased total density decreases mortality risk. We now see those coveted interactions between MAP and seedling density. At increased MAP, the conspecific density elevates mortality risk even further, and total density decreases mortality risk even further. This is the signal that we've been looking for and I don't love that I've found it. 
+
+# Evaluating Models as GAMs
+
+I'm going to step up the complexity here by running the previous models as GAMs for a comparison. In this era, linear models really aren't going to fly, so I am going to try a simple non-linear model. 
+
+```{r gam1 all sites}
+dat11 <- dat11 %>% mutate(DEAD = ifelse(mort == 1, 1, 0), ALIVE = ifelse(mort == 0, 1, 0))
+
+dat11$MAP <- as.numeric(dat11$MAP)
+dat11$SPP <- as.factor(dat11$SPP)
+dat11$CENSO <- as.numeric(dat11$CENSO)
+dat11$TIME_SINCE_LAST_CENSUS <- as.numeric(dat11$TIME_SINCE_LAST_CENSUS)
+dat11$con_dens <- as.numeric(dat11$con_dens)
+dat11$tot_dens <- as.numeric(dat11$tot_dens)
+dat11$ht.prev.census <- as.numeric(dat11$ht.prev.census)
+dat11$p_05 <- as.factor(dat11$p_05)
+dat11$ID <- as.factor(dat11$ID)
+
+gam1 <- gam(mort ~ scale(MAP) +
+              s(con_dens, k = 10) +
+              s(tot_dens, k = 10) +
+              s(con_dens, by = scale(MAP), k = 10) +
+            s(tot_dens, by = scale(MAP), k = 10) +
+              ht.prev.census + 
+              s(SPP, bs = "re") +
+              s(CENSO, bs = "re") +
+            s(p_05, bs= "re") +
+              s(ID, bs = "re"),
+            family = binomial(link = cloglog),
+            offset = log(TIME_SINCE_LAST_CENSUS),
+                data = dat11)
+
+anova.gam(gam1)
+summary(gam1)
+plot(gam1)
+```
+This model will run but won't finish. I think the random effect splines are wrecking havoc on the program. I may need an HPC to run this model. All of the REs are essential here. I could reduce them by subbing the p_05 spline to a "BOSQUE" spline, but that's the only one that could be reduced and p_05 to BOSQUE may be too extreme. Hopefully a p_20 would run. 
