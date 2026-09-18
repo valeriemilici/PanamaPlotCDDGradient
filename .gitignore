@@ -54,3 +54,5 @@ rsconnect/
 *.jpg
 *.tiff
 *.png
+*/output/
+*.Rdata
